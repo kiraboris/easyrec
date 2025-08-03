@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  easyrec-api:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - MODEL_DIR=/app/models/checkpoints/deepfm_movies
+      - CONFIG_PATH=/app/config/deepfm_config.prototxt
+      - PORT=5000
+      - WORKERS=4
+      - LOG_LEVEL=info
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Optional: Add Redis for caching
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

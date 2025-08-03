@@ -1,0 +1,36 @@
+# Core Dependencies
+tensorflow==1.15.5
+numpy>=1.16.0
+pandas>=1.0.0
+scikit-learn>=0.22.0
+
+# EasyRec Framework (Alibaba)
+# Install from source: git+https://github.com/alibaba/EasyRec.git
+# Or install after cloning: pip install -e EasyRec/
+
+# API Server
+flask>=1.1.0
+flask-cors>=3.0.0
+requests>=2.22.0
+gunicorn>=20.0.0
+
+# Streaming & Online Learning
+kafka-python>=2.0.0
+confluent-kafka>=1.8.0
+datahub>=2.15.0
+
+# Configuration & Utilities
+pyyaml>=5.3.0
+protobuf>=3.8.0
+click>=7.0
+tqdm>=4.40.0
+python-dotenv>=0.19.0
+
+# Monitoring & Logging
+prometheus-client>=0.12.0
+structlog>=21.0.0
+
+# Development Tools
+pytest>=6.0.0
+black>=20.8b1
+flake8>=3.8.0
