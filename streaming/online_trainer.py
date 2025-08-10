@@ -3,7 +3,6 @@ Online Trainer for EasyRec Models
 Integrates with Alibaba EasyRec's Online Deep Learning (ODL) framework
 """
 import os
-# removed unused json import
 import logging
 import subprocess
 import tempfile
