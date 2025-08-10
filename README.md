@@ -292,14 +292,11 @@ easyrec_online/
 │   └── online_trainer.py        # Incremental training
 ├── scripts/
 │   ├── train.py                # Training script (uses EasyRec)
-│   ├── evaluate.py             # Evaluation script (this project)
-│   ├── serve.py                # Production server (this project)
-│   └── online_train.py         # 🆕 Online training script (this project)
+│   └── serve.py                # Production server (this project)
 ├── tests/
 │   ├── __init__.py
 │   └── test_api.py             # API tests (this project)
 ├── setup.sh                    # Setup script (this project)
-├── start.sh                    # Quick start script (this project)
 ├── Dockerfile                  # Docker configuration (this project)
 ├── docker-compose.yml          # Docker Compose setup (this project)
 ├── config.ini                  # Configuration file (this project)
@@ -359,15 +356,12 @@ Let's get your recommendation system running in 4 simple steps:
 
 ### 1. Setup the project:
 ```bash
-chmod +x setup.sh start.sh
+chmod +x setup.sh 
 ./setup.sh
 ```
 *This installs all dependencies and prepares your environment*
 
-### 2. Start the API server:
-```bash
-./start.sh
-```
+### 2. Train the exmple model and start the API server, following the instructions printed by setup.sh
 *This starts your recommendation service on http://localhost:5000*
 
 ### 3. Test basic recommendations:
