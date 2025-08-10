@@ -1,5 +1,7 @@
 # EasyRec Online - Real-time Recommendation System with REST API
 
+> API Version: 1.1.0
+
 This project provides an **online learning extension** for Alibaba's EasyRec framework, adding REST API capabilities and real-time model updates for production recommendation systems.
 
 ## 🎯 Understanding Recommendation Systems (For Beginners)
@@ -468,63 +470,22 @@ Your recommendation system provides these easy-to-use endpoints:
   - *Output*: Probability scores (0-1, higher = more likely to interact)
 
 ### 🔧 System Health & Info
-- `GET /health` - Check if the system is running properly
-  - *Use case*: Monitor system status, use in load balancers
-  - *Output*: System status, response times, model version
-
-- `GET /model/info` - Get information about the current model
-  - *Use case*: Check model version, training date, performance metrics
-  - *Output*: Model metadata, feature info, training statistics
+- `GET /health` - Check if the system is running properly (includes `version` field)
+- `GET /model/info` - Aggregated model info (now also includes online incremental details if trainer active)
+- `POST /model/export` - Export current model (replaces former `/online/model/export`)
 
 ### 🚀 Online Learning APIs  
 - `POST /online/data/add` - Add new user interaction data
-  - *Use case*: "User just clicked/bought/rated an item - learn from this"
-  - *Input*: User interactions with labels (1=positive, 0=negative)
-
 - `GET /online/training/status` - Check if the model is currently learning
-  - *Use case*: Monitor training progress, check system load
-  - *Output*: Training status, progress, estimated completion time
+- `POST /online/training/start` - Start incremental training
+- `POST /online/training/stop` - Stop incremental training
+- `PATCH /online/training/restart-policy` - Update restart policy parameters
+- `GET /online/training/logs` - Tail training logs
+- `GET /online/updates/list` - List incremental update artifacts (may be merged into `/model/info` in future)
 
-- `POST /online/training/start` - Start learning from new data
-  - *Use case*: Trigger model updates with accumulated interaction data
-  - *Output*: Training job ID, estimated duration
-
-## Configuration
-
-The project uses EasyRec's configuration system with `.prototxt` files to define:
-- Data input/output paths
-- Feature engineering
-- Model architecture
-- Training parameters
-- Evaluation metrics
-
-## Supported Models
-
-Each model uses different techniques to understand user preferences and make recommendations:
-
-- **DeepFM**: Deep Factorization Machine
-  - *What it does*: Combines simple patterns (like "young users like action movies") with complex patterns (like "users who like A and B also like C")
-  - *Best for*: E-commerce, apps with lots of categorical features (brands, categories, etc.)
-
-- **Wide&Deep**: Wide & Deep Learning
-  - *What it does*: Balances memorization (remembering specific user-item pairs) with generalization (learning broader patterns)
-  - *Best for*: App stores, content platforms where you need both popular and personalized recommendations
-
-- **DSSM**: Deep Structured Semantic Model  
-  - *What it does*: Understands the "meaning" behind users and items to find semantic similarities
-  - *Best for*: Search recommendations, content discovery where text/descriptions matter
-
-- **DCN**: Deep & Cross Network
-  - *What it does*: Automatically discovers feature interactions without manual engineering
-  - *Best for*: Complex datasets where feature relationships are not obvious
-
-- **AutoInt**: Automatic Feature Interaction Learning
-  - *What it does*: Uses attention mechanisms to automatically find which features work well together
-  - *Best for*: High-dimensional data with many features where manual feature engineering is difficult
-
-## License
-
-This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
+### 📡 Streaming (Kafka) Utilities
+- `GET /online/streaming/status` - Kafka consumer status
+- `POST /online/streaming/consume` - Manually consume a batch (debug/testing)
 
 ## References
 

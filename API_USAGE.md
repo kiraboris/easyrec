@@ -1,5 +1,7 @@
 # EasyRec Online - API Usage Examples
 
+> API Version: 1.1.0
+
 This document provides examples of how to use the **EasyRec Online** REST API, which extends Alibaba's EasyRec framework with real-time learning capabilities.
 
 ## 🏗️ Architecture Overview
@@ -40,7 +42,7 @@ python scripts/serve.py
 
 **Endpoint:** `GET /health`
 
-**Description:** Check if the API is running and get model status.
+**Description:** Check if the API is running and get model status (now includes `version`).
 
 **Example:**
 ```bash
@@ -64,7 +66,8 @@ curl -X GET http://localhost:5000/health
     "online_learning": true,
     "streaming_support": true,
     "incremental_updates": true
-  }
+  },
+  "version": "1.1.0"
 }
 ```
 
@@ -72,7 +75,7 @@ curl -X GET http://localhost:5000/health
 
 **Endpoint:** `GET /model/info`
 
-**Description:** Get detailed information about the loaded model.
+**Description:** Get aggregated information about the loaded base model and (if active) online incremental trainer (latest checkpoint, exports, incremental update artifacts).
 
 **Example:**
 ```bash
@@ -306,53 +309,58 @@ curl -X GET http://localhost:5000/online/training/status
 }
 ```
 
-### 10. Trigger Model Retraining
+### 10. Tail Training Logs
 
-**Endpoint:** `POST /online/model/retrain`
+**Endpoint:** `GET /online/training/logs?lines=100&stream=stderr`
 
-**Description:** Trigger full or incremental model retraining.
+**Description:** Retrieve latest stdout/stderr lines from the online training subprocess.
+
+**Example:**
+```bash
+curl -X GET 'http://localhost:5000/online/training/logs?lines=50&stream=both'
+```
+
+### 11. Update Restart Policy
+
+**Endpoint:** `PATCH /online/training/restart-policy`
 
 **Request Body:**
 ```json
-{
-  "retrain_type": "incremental",
-  "export_after": true
-}
+{ "max_restarts": 5, "restart_backoff_sec": 20 }
 ```
 
 **Example:**
 ```bash
-curl -X POST http://localhost:5000/online/model/retrain \
-  -H "Content-Type: application/json" \
-  -d '{
-    "retrain_type": "full",
-    "export_after": true
-  }'
+curl -X PATCH http://localhost:5000/online/training/restart-policy \
+  -H 'Content-Type: application/json' \
+  -d '{"max_restarts":5, "restart_backoff_sec":20}'
 ```
 
-### 11. Get Streaming Status
+### 12. Export Model
 
-**Endpoint:** `GET /online/streaming/status`
+**Endpoint:** `POST /model/export`
 
-**Description:** Get status of streaming data consumption.
-
-**Example:**
-```bash
-curl -X GET http://localhost:5000/online/streaming/status
-```
-
-**Response:**
+**Request Body:**
 ```json
-{
-  "success": true,
-  "data": {
-    "connected": true,
-    "running": false,
-    "topic": "easyrec_training",
-    "group": "easyrec_online",
-    "current_offsets": {"0": 12345, "1": 12350}
-  }
-}
+{ "export_dir": "models/export/online", "include_incremental": true }
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:5000/model/export \
+  -H 'Content-Type: application/json' \
+  -d '{"export_dir":"models/export/online"}'
+```
+
+### 13. List Incremental Updates
+
+**Endpoint:** `GET /online/updates/list`
+
+**Description:** List incremental update artifacts (may be merged into /model/info later).
+
+**Example:**
+```bash
+curl -X GET http://localhost:5000/online/updates/list
 ```
 
 ## Python Client Example
@@ -433,21 +441,33 @@ class EasyRecClient:
         response = requests.get(f"{self.base_url}/online/training/status")
         return response.json()
     
-    def trigger_retraining(self, retrain_type="incremental", export_after=True):
-        """Trigger model retraining"""
+    def tail_training_logs(self, lines=100, stream="stderr"):
+        """Tail training logs"""
+        response = requests.get(f"{self.base_url}/online/training/logs", params={"lines": lines, "stream": stream})
+        return response.json()
+    
+    def update_restart_policy(self, max_restarts=5, restart_backoff_sec=20):
+        """Update restart policy"""
         payload = {
-            "retrain_type": retrain_type,
-            "export_after": export_after
+            "max_restarts": max_restarts,
+            "restart_backoff_sec": restart_backoff_sec
         }
-        response = requests.post(
-            f"{self.base_url}/online/model/retrain",
+        response = requests.patch(
+            f"{self.base_url}/online/training/restart-policy",
             json=payload
         )
         return response.json()
     
-    def get_streaming_status(self):
-        """Get streaming status"""
-        response = requests.get(f"{self.base_url}/online/streaming/status")
+    def export_model(self, export_dir="models/export/online", include_incremental=True):
+        """Export model"""
+        payload = {
+            "export_dir": export_dir,
+            "include_incremental": include_incremental
+        }
+        response = requests.post(
+            f"{self.base_url}/model/export",
+            json=payload
+        )
         return response.json()
 
 # Usage example
@@ -485,9 +505,17 @@ if __name__ == "__main__":
         training_result = client.start_incremental_training()
         print("Started training:", training_result)
     
-    # Check streaming status
-    streaming_status = client.get_streaming_status()
-    print("Streaming status:", streaming_status)
+    # Tail training logs
+    logs = client.tail_training_logs(lines=50, stream="both")
+    print("Training logs:", logs)
+    
+    # Update restart policy
+    restart_policy = client.update_restart_policy(max_restarts=3, restart_backoff_sec=10)
+    print("Updated restart policy:", restart_policy)
+    
+    # Export model
+    export_result = client.export_model(export_dir="models/export/online")
+    print("Exported model:", export_result)
 ```
 
 ## JavaScript Client Example

@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 # Initialize model
 model = get_model()
 
+# API version
+API_VERSION = "1.1.0"
+
 # Register online learning routes
 try:
     from api.routes_online import online_bp
@@ -39,6 +42,7 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
+        'version': API_VERSION,
         'message': 'EasyRec Online API is running',
         'model_status': model.get_model_info(),
         'features': {
@@ -49,21 +53,73 @@ def health_check():
     })
 
 
-@app.route('/model/info', methods=['GET'])
-def model_info():
-    """Get model information"""
+@app.route('/model/export', methods=['POST'])
+def root_model_export():
+    """Export current (possibly incrementally trained) model.
+    Body: {"export_dir": "models/export/online", "include_incremental": true}
+    """
     try:
-        info = model.get_model_info()
-        return jsonify({
-            'success': True,
-            'data': info
-        })
+        data = request.get_json() or {}
+        export_dir = data.get('export_dir', 'models/export/online')
+        # Reuse sanitizer from online routes if available
+        try:
+            from api.routes_online import _sanitize_export_dir, get_online_trainer
+            ok, sanitized = _sanitize_export_dir(export_dir)
+            if not ok:
+                return jsonify({'success': False, 'error': sanitized}), 400
+            trainer = get_online_trainer()
+            include_incremental = data.get('include_incremental', True)
+            success = trainer.trigger_model_export(sanitized)
+            if not success:
+                return jsonify({'success': False, 'error': 'Model export failed'}), 500
+            incr = trainer.get_incremental_updates() if include_incremental else None
+            return jsonify({'success': True, 'data': {'export_dir': sanitized, 'incremental_updates': incr}})
+        except ImportError:
+            # Fallback: just succeed with base model info
+            return jsonify({'success': False, 'error': 'Online trainer not available'}), 400
     except Exception as e:
-        logger.error(f"Error getting model info: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        logging.getLogger(__name__).error(f"Error exporting model: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/model/info', methods=['GET'])
+def root_model_info():
+    """Aggregate model info including online trainer status if present."""
+    try:
+        base_info = model.get_model_info()
+        extra = {}
+        try:
+            from api.routes_online import get_online_trainer, ALLOWED_EXPORT_BASE
+            trainer = get_online_trainer()
+            status = trainer.get_training_status()
+            latest_checkpoint = status.get('latest_checkpoint')
+            num_checkpoints = status.get('num_checkpoints')
+            incr = trainer.get_incremental_updates()
+            exports = []
+            base_export = os.path.normpath(ALLOWED_EXPORT_BASE)
+            if os.path.isdir(base_export):
+                for entry in os.listdir(base_export):
+                    full = os.path.join(base_export, entry)
+                    if os.path.isdir(full):
+                        try: m = os.path.getmtime(full)
+                        except OSError: m = 0.0
+                        exports.append({'dir': entry, 'path': full, 'modified': m})
+                exports.sort(key=lambda x: x['modified'])
+            latest_export = exports[-1] if exports else None
+            extra = {
+                'online': True,
+                'latest_checkpoint': latest_checkpoint,
+                'num_checkpoints': num_checkpoints,
+                'latest_export': latest_export,
+                'exports': exports,
+                'incremental_updates': incr
+            }
+        except ImportError:
+            extra = {'online': False}
+        return jsonify({'success': True, 'data': {'base_model': base_info, **extra}})
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Error getting model info: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/predict', methods=['POST'])
@@ -260,6 +316,13 @@ def internal_error(error):
         'success': False,
         'error': 'Internal server error'
     }), 500
+
+
+@app.after_request
+def add_version_header(response):
+    """Embed X-API-Version header in all responses"""
+    response.headers['X-API-Version'] = API_VERSION
+    return response
 
 
 def main():

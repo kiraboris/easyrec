@@ -6,7 +6,7 @@ from flask import Blueprint, request, jsonify
 import logging
 import os
 import sys
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,6 +55,57 @@ def get_online_trainer():
             base_checkpoint=base_checkpoint
         )
     return _online_trainer
+
+
+# Helper validation utilities
+ALLOWED_EXPORT_BASE = os.getenv('ALLOWED_EXPORT_BASE', 'models/export')
+DISALLOWED_ENV_KEYS = {k.lower() for k in ("PYTHONPATH", "PATH", "LD_PRELOAD")}
+
+def _validate_kafka_config(cfg: Dict[str, Any]) -> Tuple[bool, str]:
+    required = ['servers', 'topic']
+    for r in required:
+        if r not in cfg or not cfg.get(r):
+            return False, f"Missing kafka_config field '{r}'"
+    servers = cfg.get('servers', '')
+    bad = []
+    for part in servers.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if ':' not in part:
+            bad.append(part)
+            continue
+        host, port = part.rsplit(':', 1)
+        if not host or not port.isdigit():
+            bad.append(part)
+            continue
+        p = int(port)
+        if p < 1 or p > 65535:
+            bad.append(part)
+    if bad:
+        return False, f"Invalid bootstrap servers entries: {bad}"
+    return True, ''
+
+def _sanitize_export_dir(path: str) -> Tuple[bool, str]:
+    if not path:
+        return False, "export_dir is empty"
+    if os.path.isabs(path):
+        return False, "export_dir must be relative"
+    norm = os.path.normpath(path)
+    base_norm = os.path.normpath(ALLOWED_EXPORT_BASE)
+    if not norm.startswith(base_norm):
+        return False, f"export_dir must reside under '{ALLOWED_EXPORT_BASE}'"
+    if '..' in norm.split(os.sep):
+        return False, "export_dir path traversal not allowed"
+    return True, norm
+
+def _filter_env_overrides(env: Dict[str, Any]) -> Dict[str, str]:
+    safe = {}
+    for k, v in env.items():
+        if k.lower() in DISALLOWED_ENV_KEYS:
+            continue
+        safe[k] = str(v)
+    return safe
 
 
 @online_bp.route('/data/add', methods=['POST'])
@@ -121,59 +172,62 @@ def start_incremental_training():
     """
     Start incremental training with streaming data
     
-    Request body:
+    Request body example:
     {
-        "kafka_config": {
-            "servers": "localhost:9092",
-            "topic": "easyrec_training",
-            "group": "easyrec_online",
-            "offset_time": "20240101 00:00:00"
-        },
-        "update_config": {
-            "dense_save_steps": 100,
-            "sparse_save_steps": 100
-        }
+        "kafka_config": {"servers": "localhost:9092", "topic": "easyrec_training", "group": "easyrec_online", "offset_time": "20240101 00:00:00"},
+        "update_config": {"dense_save_steps": 100, "sparse_save_steps": 100, "fs": {}},
+        "max_restarts": 5,
+        "restart_backoff_sec": 15,
+        "watchdog_interval_sec": 5,
+        "env_overrides": {"CUDA_VISIBLE_DEVICES": "0"}
     }
     """
     try:
         data = request.get_json() or {}
-        
-        kafka_config = data.get('kafka_config', {
+        kafka_config = data.get('kafka_config') or {
             'servers': 'localhost:9092',
             'topic': 'easyrec_training',
             'group': 'easyrec_online'
-        })
-        
-        update_config = data.get('update_config', {
+        }
+        ok, err = _validate_kafka_config(kafka_config)
+        if not ok:
+            return jsonify({'success': False, 'error': err}), 400
+        update_config = data.get('update_config') or {
             'dense_save_steps': 100,
             'sparse_save_steps': 100,
             'fs': {}
-        })
-        
-        # Start incremental training
+        }
+        # numeric params
+        try:
+            max_restarts = int(data.get('max_restarts', 3))
+            restart_backoff_sec = int(data.get('restart_backoff_sec', 10))
+            watchdog_interval_sec = int(data.get('watchdog_interval_sec', 5))
+        except ValueError:
+            return jsonify({'success': False, 'error': 'Numeric parameters must be integers'}), 400
+        if max_restarts < 0 or restart_backoff_sec < 0 or watchdog_interval_sec < 1:
+            return jsonify({'success': False, 'error': 'Invalid numeric range for restarts/backoff/interval'}), 400
+        env_overrides = data.get('env_overrides') if isinstance(data.get('env_overrides'), dict) else None
+        if env_overrides:
+            env_overrides = _filter_env_overrides(env_overrides)
         trainer = get_online_trainer()
-        success = trainer.start_incremental_training(kafka_config, update_config)
-        
+        if trainer.is_training:
+            return jsonify({'success': False, 'error': 'Training already in progress'}), 409
+        success = trainer.start_incremental_training(
+            kafka_config=kafka_config,
+            update_config=update_config,
+            max_restarts=max_restarts,
+            restart_backoff_sec=restart_backoff_sec,
+            env_overrides=env_overrides,
+            watchdog_interval_sec=watchdog_interval_sec
+        )
         if success:
-            return jsonify({
-                'success': True,
-                'data': {
-                    'message': 'Incremental training started',
-                    'status': trainer.get_training_status()
-                }
-            })
+            return jsonify({'success': True, 'data': {'message': 'Incremental training started', 'status': trainer.get_training_status()}})
         else:
-            return jsonify({
-                'success': False,
-                'error': 'Failed to start incremental training'
-            }), 500
-            
+            # Fallback generic error (trainer internal failure)
+            return jsonify({'success': False, 'error': 'Trainer failed to start (see logs for details)'}), 500
     except Exception as e:
         logger.error(f"Error starting incremental training: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @online_bp.route('/training/stop', methods=['POST'])
@@ -211,129 +265,59 @@ def get_training_status():
     try:
         trainer = get_online_trainer()
         status = trainer.get_training_status()
-        
-        return jsonify({
-            'success': True,
-            'data': status
-        })
-        
+        # Merge concise health info (process rc etc.)
+        health = trainer.get_health()
+        status.update({k: v for k, v in health.items() if k not in status})
+        return jsonify({'success': True, 'data': status})
     except Exception as e:
         logger.error(f"Error getting training status: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@online_bp.route('/model/retrain', methods=['POST'])
-def trigger_model_retrain():
-    """
-    Trigger full model retraining
-    
-    Request body:
-    {
-        "retrain_type": "full",  # or "incremental"
-        "data_source": "latest",  # or specific data source
-        "export_after": true
-    }
-    """
+@online_bp.route('/training/restart-policy', methods=['PATCH'])
+def update_restart_policy():
+    """Update restart policy (max_restarts, backoff_sec)."""
     try:
         data = request.get_json() or {}
-        
-        retrain_type = data.get('retrain_type', 'incremental')
-        export_after = data.get('export_after', True)
-        
         trainer = get_online_trainer()
-        
-        if retrain_type == 'full':
-            # For full retraining, we'd typically trigger a new training job
-            # This is a simplified implementation
-            logger.info("Full retraining requested - would trigger batch training job")
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'message': 'Full retraining scheduled',
-                    'retrain_type': retrain_type,
-                    'estimated_time': '2-4 hours'
-                }
-            })
-            
-        else:
-            # Incremental retraining
-            export_dir = 'models/export/online' if export_after else None
-            
-            if export_after:
-                success = trainer.trigger_model_export(export_dir)
-                if not success:
-                    return jsonify({
-                        'success': False,
-                        'error': 'Model export failed'
-                    }), 500
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'message': 'Incremental retraining completed',
-                    'retrain_type': retrain_type,
-                    'export_dir': export_dir if export_after else None
-                }
-            })
-            
+        max_restarts = data.get('max_restarts')
+        backoff_sec = data.get('restart_backoff_sec') or data.get('backoff_sec')
+        if max_restarts is not None:
+            try: max_restarts = int(max_restarts)
+            except ValueError: return jsonify({'success': False, 'error': 'max_restarts must be int'}), 400
+            if max_restarts < 0: return jsonify({'success': False, 'error': 'max_restarts must be >=0'}), 400
+        if backoff_sec is not None:
+            try: backoff_sec = int(backoff_sec)
+            except ValueError: return jsonify({'success': False, 'error': 'backoff_sec must be int'}), 400
+            if backoff_sec < 0: return jsonify({'success': False, 'error': 'backoff_sec must be >=0'}), 400
+        result = trainer.update_restart_policy(max_restarts=max_restarts, backoff_sec=backoff_sec)
+        return jsonify({'success': True, 'data': result})
     except Exception as e:
-        logger.error(f"Error triggering model retrain: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        logger.error(f"Error updating restart policy: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@online_bp.route('/model/export', methods=['POST'])
-def export_model():
-    """
-    Export current model for serving
-    
-    Request body:
-    {
-        "export_dir": "models/export/online",
-        "include_incremental": true
-    }
+@online_bp.route('/training/logs', methods=['GET'])
+def tail_training_logs():
+    """Tail training logs.
+    Query params: lines (int), stream=stdout|stderr|both
     """
     try:
-        data = request.get_json() or {}
-        
-        export_dir = data.get('export_dir', 'models/export/online')
-        include_incremental = data.get('include_incremental', True)
-        
+        try:
+            lines = int(request.args.get('lines', 50))
+        except ValueError:
+            return jsonify({'success': False, 'error': 'lines must be int'}), 400
+        if lines < 1: lines = 1
+        if lines > 500: lines = 500
+        stream = request.args.get('stream', 'both')
+        if stream not in ('stdout', 'stderr', 'both'):
+            return jsonify({'success': False, 'error': 'stream must be stdout|stderr|both'}), 400
         trainer = get_online_trainer()
-        success = trainer.trigger_model_export(export_dir)
-        
-        if success:
-            # Get incremental update info if requested
-            incremental_info = None
-            if include_incremental:
-                incremental_info = trainer.get_incremental_updates()
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'export_dir': export_dir,
-                    'message': 'Model exported successfully',
-                    'incremental_updates': incremental_info
-                }
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Model export failed'
-            }), 500
-            
+        logs = trainer.tail_logs(lines=lines, stream=stream)
+        return jsonify({'success': True, 'data': {'stream': stream, 'lines': lines, 'logs': logs}})
     except Exception as e:
-        logger.error(f"Error exporting model: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        logger.error(f"Error tailing logs: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @online_bp.route('/streaming/status', methods=['GET'])
