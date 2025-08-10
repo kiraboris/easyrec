@@ -15,7 +15,7 @@ import re
 import sys
 from collections import deque
 import select  # used for non-blocking I/O in log consumption
-import atexit  # atexit handler for cleanup
+import atexit
 
 logger = logging.getLogger(__name__)
 
