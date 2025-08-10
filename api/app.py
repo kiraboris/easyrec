@@ -158,7 +158,10 @@ def predict_scores():
             }), 400
         
         # Get predictions
-        scores = model.predict_scores(user_ids, item_ids)
+        try:
+            scores = model.predict_scores(user_ids, item_ids)
+        except RuntimeError as e:
+            return jsonify({'success': False, 'error': str(e), 'status': 'model_unavailable'}), 503
         
         # Format response
         predictions = []
@@ -223,7 +226,10 @@ def recommend_items():
             }), 400
         
         # Get recommendations
-        recommendations = model.recommend_items(user_id, candidate_items, top_k)
+        try:
+            recommendations = model.recommend_items(user_id, candidate_items, top_k)
+        except RuntimeError as e:
+            return jsonify({'success': False, 'error': str(e), 'status': 'model_unavailable'}), 503
         
         return jsonify({
             'success': True,

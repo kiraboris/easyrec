@@ -2,6 +2,8 @@
 
 > API Version: 1.1.0
 
+Note: If the underlying recommendation model is not yet loaded, prediction endpoints (`POST /predict`, `POST /recommend`) will return HTTP 503 with a JSON body `{ "success": false, "status": "model_unavailable", "error": "..." }`. Clients should implement retry/backoff or surface an appropriate loading state.
+
 This project provides an **online learning extension** for Alibaba's EasyRec framework, adding REST API capabilities and real-time model updates for production recommendation systems.
 
 ## 🎯 Understanding Recommendation Systems (For Beginners)

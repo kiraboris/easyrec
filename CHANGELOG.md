@@ -9,6 +9,7 @@ The format is based on [Semantic Versioning](https://semver.org/).
 - Added `version` field to `GET /health` response (API versioning introduced).
 - Promoted model endpoints from `/online/model/*` to root level: `GET /model/info`, `POST /model/export`.
 - Replaced `POST /online/training/restart_policy` with `PATCH /online/training/restart-policy` for RESTful semantics.
+- Prediction endpoints (`POST /predict`, `POST /recommend`) now return HTTP 503 with `status: model_unavailable` when the model is not loaded instead of returning random fallback scores.
 
 ### Removed
 - Deprecated `POST /online/model/retrain` endpoint (non-online full retrain placeholder) removed.
@@ -17,11 +18,13 @@ The format is based on [Semantic Versioning](https://semver.org/).
 ### Added
 - Root-level model export (`POST /model/export`) and aggregated model info now include incremental trainer state when active.
 - Separate `CHANGELOG.md` file.
+- Stronger path sanitization for model/config directories.
 
 ### Migration Notes
 - Update any clients calling `/online/model/export` or `/online/model/info` to use root-level equivalents.
 - Remove usage of `/online/model/retrain`; implement offline retraining workflow separately if needed.
 - Adjust clients expecting restart policy change via POST to use PATCH at new hyphenated path.
+- Adjust client error handling: treat 503 `model_unavailable` as a retriable state and avoid using stale or placeholder predictions.
 
 ## [1.0.0] - 2025-08-01
 ### Added
