@@ -14,7 +14,7 @@ import threading
 import re
 import sys
 from collections import deque
-import select  # added for non-blocking log consumption
+import select  # used for non-blocking I/O in log consumption
 import atexit  # atexit handler for cleanup
 
 logger = logging.getLogger(__name__)
