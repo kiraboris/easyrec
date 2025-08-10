@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2025-08-10
+### Added
+- Dedicated `TrainingDataProducer` component (Kafka producer abstraction with confluent_kafka / kafka-python fallback).
+- Monitoring streaming endpoints: `GET /online/streaming/config`, `GET /online/streaming/status`, `POST /online/streaming/consume` (separate monitoring consumer group `<group>-monitor`).
+- Support for inline `kafka_config` in `POST /online/data/add` (bootstrap mode before training starts).
+- HTTP 207 partial success response for `POST /online/data/add` when some but not all samples are published.
+
+### Changed
+- `POST /online/data/add` now publishes directly to Kafka (was mock). Requires prior `POST /online/training/start` unless inline Kafka config supplied.
+- Centralized Kafka config management inside `routes_online.py`; trainer no longer owns data ingestion.
+- Internal EasyRec consumer (training) and external monitoring consumer separated; documentation clarifies roles.
+- API docs updated to emphasize calling `/online/training/start` before regular data ingestion.
+
+### Deprecated
+- Implicit mock ingestion path (previous `EasyRecOnlineTrainer.add_training_data`) retained only for backward compatibility; will be removed in a future release.
+
+### Migration Notes
+- Ensure clients call `POST /online/training/start` to establish Kafka config before relying on `POST /online/data/add` (unless using bootstrap inline config pattern).
+- Update any code referencing trainer.add_training_data to use the REST endpoint or integrate directly with Kafka.
+- If you previously scraped messages via the same consumer group, switch to the monitoring endpoints to avoid interfering with training offsets.
+
 ## [1.1.0] - 2025-08-10
 ### Changed
 - Added `version` field to `GET /health` response (API versioning introduced).

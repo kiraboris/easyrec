@@ -1,6 +1,6 @@
 # EasyRec Online - API Usage Examples
 
-> API Version: 1.1.0
+> API Version: 1.2.0
 
 This document provides examples of how to use the **EasyRec Online** REST API, which extends Alibaba's EasyRec framework with real-time learning capabilities.
 
@@ -10,6 +10,13 @@ This document provides examples of how to use the **EasyRec Online** REST API, w
 
 - **🔵 Alibaba EasyRec**: Model training, evaluation, configuration format
 - **🟢 EasyRec Online**: REST API, streaming support, incremental updates
+- **Kafka Flow**:
+  1. `POST /online/training/start` supplies/locks the active Kafka `kafka_config` (bootstrap servers, topic, group) and launches the EasyRec training process which creates its **internal consumer** (group = configured group) that performs incremental learning.
+  2. Client applications send events via `POST /online/data/add` which publishes to Kafka using the shared config.
+  3. A **monitoring consumer** (group = `<group>-monitor`) is exposed for diagnostics via `/online/streaming/status`, `/online/streaming/consume` and `/online/streaming/config`; it does NOT affect training offsets.
+  4. If you must enqueue data before training has started, include an inline `kafka_config` in the `data/add` request; this initializes the producer (training can be started later with the same config).
+
+> IMPORTANT: For normal operation call `/online/training/start` BEFORE using `/online/data/add`. Inline `kafka_config` in `data/add` is an advanced/bootstrap path only.
 
 ## Starting the API Server
 
@@ -217,26 +224,29 @@ curl -X GET http://localhost:5000/embeddings/item/456
 
 **Endpoint:** `POST /online/data/add`
 
-**Description:** Add training samples for incremental learning.
+**Description:** Publish training samples to Kafka for incremental learning. Requires that incremental training has been started with `/online/training/start`, unless you provide an inline `kafka_config` (bootstrap scenario).
 
-**Request Body:**
+**Request Body (standard after training started):**
 ```json
 {
   "samples": [
-    {
-      "user_id": 123,
-      "item_id": 456,
-      "label": 1,
-      "rating": 4.5,
-      "features": {
-        "gender": 1,
-        "age": 3,
-        "genres": "Action|Drama"
-      }
-    }
+    { "user_id": 123, "item_id": 456, "label": 1, "rating": 4.5 }
   ]
 }
 ```
+
+**Request Body (bootstrap before training started):**
+```json
+{
+  "kafka_config": { "servers": "localhost:9092", "topic": "easyrec_training" },
+  "samples": [ { "user_id": 123, "item_id": 456, "label": 1 } ]
+}
+```
+
+**Notes:**
+- Inline `kafka_config` must include at least `servers` and `topic`.
+- Messages are JSON; key defaults to `user_id` if present.
+- Partial success returns HTTP 207 (multi-status semantics) with counts.
 
 **Example:**
 ```bash
@@ -253,7 +263,7 @@ curl -X POST http://localhost:5000/online/data/add \
 
 **Endpoint:** `POST /online/training/start`
 
-**Description:** Start real-time incremental training with streaming data.
+**Description:** Start real-time incremental training. MUST be called (recommended) before data ingestion unless using the bootstrap pattern above.
 
 **Request Body:**
 ```json
@@ -283,6 +293,23 @@ curl -X POST http://localhost:5000/online/training/start \
     }
   }'
 ```
+
+### (New) Streaming / Monitoring Endpoints
+
+These endpoints expose the active Kafka streaming configuration and allow safe monitoring without disturbing training offsets.
+
+#### A. Get Streaming Config
+**Endpoint:** `GET /online/streaming/config`
+**Description:** Returns active `kafka_config` plus the derived monitoring consumer group (`group + '-monitor'`).
+
+#### B. Streaming Status
+**Endpoint:** `GET /online/streaming/status`
+**Description:** Returns monitoring consumer connection state and current partition offsets (group = `<group>-monitor`).
+
+#### C. Manual Consume (Monitoring)
+**Endpoint:** `POST /online/streaming/consume`
+**Request Body:** `{ "batch_size": 100, "timeout": 10 }`
+**Description:** Fetch a sample batch (preview) without committing training offsets.
 
 ### 9. Get Training Status
 
@@ -413,9 +440,13 @@ class EasyRecClient:
     
     # Online Learning Methods (EasyRec Online Extensions)
     
-    def add_training_data(self, samples):
-        """Add training samples for incremental learning"""
+    def add_training_data(self, samples, kafka_config=None):
+        """Publish training samples.
+        If training not started yet you may pass kafka_config={'servers':..., 'topic':...}.
+        """
         payload = {"samples": samples}
+        if kafka_config:
+            payload["kafka_config"] = kafka_config
         response = requests.post(
             f"{self.base_url}/online/data/add",
             json=payload
@@ -423,13 +454,12 @@ class EasyRecClient:
         return response.json()
     
     def start_incremental_training(self, kafka_config=None, update_config=None):
-        """Start incremental training"""
+        """Start incremental training (recommended before add_training_data)."""
         payload = {}
         if kafka_config:
             payload["kafka_config"] = kafka_config
         if update_config:
             payload["update_config"] = update_config
-            
         response = requests.post(
             f"{self.base_url}/online/training/start",
             json=payload
@@ -488,7 +518,15 @@ if __name__ == "__main__":
     
     # Online Learning Examples
     
-    # Add new training data
+    # Start incremental training (recommended before add_training_data)
+    training_result = client.start_incremental_training(kafka_config={
+        "servers": "localhost:9092",
+        "topic": "easyrec_training",
+        "group": "easyrec_online"
+    })
+    print("Started training:", training_result)
+
+    # Add new training data AFTER training started
     new_samples = [
         {"user_id": 123, "item_id": 6, "label": 1, "rating": 4.8},
         {"user_id": 124, "item_id": 7, "label": 0, "rating": 2.1}
@@ -499,11 +537,6 @@ if __name__ == "__main__":
     # Check training status
     status = client.get_training_status()
     print("Training status:", status)
-    
-    # Start incremental training (if not already running)
-    if not status.get('data', {}).get('is_training', False):
-        training_result = client.start_incremental_training()
-        print("Started training:", training_result)
     
     # Tail training logs
     logs = client.tail_training_logs(lines=50, stream="both")
@@ -585,3 +618,4 @@ Common HTTP status codes:
 - `400`: Bad Request (invalid input)
 - `404`: Not Found
 - `500`: Internal Server Error
+```
