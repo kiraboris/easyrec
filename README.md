@@ -1,6 +1,6 @@
 # EasyRec Online - Real-time Recommendation System with REST API
 
-> API Version: 1.1.0
+> API Version: 1.2.0
 
 Note: If the underlying recommendation model is not yet loaded, prediction endpoints (`POST /predict`, `POST /recommend`) will return HTTP 503 with a JSON body `{ "success": false, "status": "model_unavailable", "error": "..." }`. Clients should implement retry/backoff or surface an appropriate loading state.
 
@@ -483,7 +483,76 @@ Your recommendation system provides these easy-to-use endpoints:
 - `GET /online/streaming/status` - Kafka consumer status
 - `POST /online/streaming/consume` - Manually consume a batch (debug/testing)
 
-## References
+## ⚙️ Streaming Architecture (Kafka as the Hub)
 
-- [EasyRec GitHub Repository](https://github.com/alibaba/EasyRec)
-- [EasyRec Documentation](https://easyrec.readthedocs.io/)
+This project uses **Apache Kafka** as the central streaming backbone between event ingestion and incremental model training.
+
+Why Kafka:
+- Decouples producers (REST, trackers) from multiple consumers (trainer, monitoring, enrichment, archival)
+- Durable replayable log (late consumers & reprocessing)
+- Scales horizontally via partitions; preserves per-key ordering (e.g. per user)
+- Independent consumer groups (training vs monitoring do not interfere)
+- Natural integration point for downstream data lake, feature store, analytics
+
+Flow:
+```
+Client → POST /online/data/add → Kafka (topic: easyrec_training)
+                                     ↓ (internal EasyRec consumer)
+                             EasyRec Online Trainer → Incremental model updates
+                                     ↓
+                               Updated recommendations
+```
+Additional monitoring consumer group `<group>-monitor` exposes:
+- `/online/streaming/status` (lag, offsets)
+- `/online/streaming/consume` (sample messages)
+- `/online/streaming/config` (active config)
+
+Startup Order (recommended):
+1. Start Kafka (docker compose up kafka)
+2. Start API service
+3. Call `POST /online/training/start` (establishes kafka_config, starts trainer) 
+4. Begin sending events with `POST /online/data/add`
+
+Bootstrap Option: You may send events BEFORE starting training by including inline `kafka_config` in `data/add`, but do start training soon after so offsets begin advancing.
+
+Event Schema (example):
+```json
+{
+  "user_id": "u123",
+  "item_id": "i456",
+  "timestamp": 1712345678,
+  "label": 1,
+  "action_type": "click",
+  "features": { "age": 34, "country": "US" },
+  "version": 1
+}
+```
+Partition Key: defaults to `user_id` (ensures per-user ordering). For skewed traffic, consider hashing or composite keys.
+
+Retention: Set topic retention (e.g. 7–30 days) and archive to data lake for long-term storage.
+
+## 🛣️ Roadmap & Extension Ideas
+| Area | Planned / Suggested Extension | Benefit |
+|------|------------------------------|---------|
+| Schema Governance | Avro / Protobuf + Schema Registry | Safe evolution, validation |
+| Data Lake Sink | Kafka Connect → S3 / HDFS (Parquet, partitioned) | Offline training, auditing |
+| Enrichment | Flink / Kafka Streams to produce enriched topic | Precomputed aggregates, lighten trainer load |
+| Feature Store | Stream to Redis/DynamoDB + Iceberg/Delta | Online + offline feature parity |
+| Monitoring | Consumer lag & anomaly metrics → Prometheus | Operational visibility |
+| DLQ | `<topic>.dlq` for invalid events | Isolation & debugging |
+| Idempotency | Idempotent producer + optional Redis key cache | Duplicate suppression |
+| Security | SASL_SSL, ACLs, secrets mgmt | Hardened production deployment |
+| Exactly-once | Transactions (confluent) / Flink EOS | Strong delivery guarantees |
+| Multi-region | MirrorMaker 2 replication | DR & locality |
+| Backfill | Replay archived Parquet → Kafka | Recompute features / retrain |
+
+Operational Defaults:
+| Setting | Suggestion | Notes |
+|---------|------------|-------|
+| Partitions | 6–12 (start) | Scale with throughput |
+| Replication | 3 (prod) | HA (1 for local dev) |
+| Retention | 7–30 days | Replay window |
+| acks | all | Strong durability |
+| Idempotence | enabled | Avoid duplicates on retry |
+| Compression | lz4 / zstd | Throughput vs CPU |
+| Linger | 5–50 ms | Balance latency vs batch |
