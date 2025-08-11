@@ -1,9 +1,5 @@
 # EasyRec Online - Real-time Recommendation System with REST API
 
-> API Version: 1.2.0
-
-Note: If the underlying recommendation model is not yet loaded, prediction endpoints (`POST /predict`, `POST /recommend`) will return HTTP 503 with a JSON body `{ "success": false, "status": "model_unavailable", "error": "..." }`. Clients should implement retry/backoff or surface an appropriate loading state.
-
 This project provides an **online learning extension** for Alibaba's EasyRec framework, adding REST API capabilities and real-time model updates for production recommendation systems.
 
 ## 🎯 Understanding Recommendation Systems (For Beginners)
@@ -292,11 +288,14 @@ easyrec_online/
 │   └── online_trainer.py        # Incremental training
 ├── scripts/
 │   ├── train.py                # Training script (uses EasyRec)
-│   └── serve.py                # Production server (this project)
+│   ├── evaluate.py             # Evaluation script (this project)
+│   ├── serve.py                # Production server (this project)
+│   └── online_train.py         # 🆕 Online training script (this project)
 ├── tests/
 │   ├── __init__.py
 │   └── test_api.py             # API tests (this project)
 ├── setup.sh                    # Setup script (this project)
+├── start.sh                    # Quick start script (this project)
 ├── Dockerfile                  # Docker configuration (this project)
 ├── docker-compose.yml          # Docker Compose setup (this project)
 ├── config.ini                  # Configuration file (this project)
@@ -356,12 +355,15 @@ Let's get your recommendation system running in 4 simple steps:
 
 ### 1. Setup the project:
 ```bash
-chmod +x setup.sh 
+chmod +x setup.sh start.sh
 ./setup.sh
 ```
 *This installs all dependencies and prepares your environment*
 
-### 2. Train the exmple model and start the API server, following the instructions printed by setup.sh
+### 2. Start the API server:
+```bash
+./start.sh
+```
 *This starts your recommendation service on http://localhost:5000*
 
 ### 3. Test basic recommendations:
@@ -466,93 +468,65 @@ Your recommendation system provides these easy-to-use endpoints:
   - *Output*: Probability scores (0-1, higher = more likely to interact)
 
 ### 🔧 System Health & Info
-- `GET /health` - Check if the system is running properly (includes `version` field)
-- `GET /model/info` - Aggregated model info (now also includes online incremental details if trainer active)
-- `POST /model/export` - Export current model (replaces former `/online/model/export`)
+- `GET /health` - Check if the system is running properly
+  - *Use case*: Monitor system status, use in load balancers
+  - *Output*: System status, response times, model version
+
+- `GET /model/info` - Get information about the current model
+  - *Use case*: Check model version, training date, performance metrics
+  - *Output*: Model metadata, feature info, training statistics
 
 ### 🚀 Online Learning APIs  
 - `POST /online/data/add` - Add new user interaction data
+  - *Use case*: "User just clicked/bought/rated an item - learn from this"
+  - *Input*: User interactions with labels (1=positive, 0=negative)
+
 - `GET /online/training/status` - Check if the model is currently learning
-- `POST /online/training/start` - Start incremental training
-- `POST /online/training/stop` - Stop incremental training
-- `PATCH /online/training/restart-policy` - Update restart policy parameters
-- `GET /online/training/logs` - Tail training logs
-- `GET /online/updates/list` - List incremental update artifacts (may be merged into `/model/info` in future)
+  - *Use case*: Monitor training progress, check system load
+  - *Output*: Training status, progress, estimated completion time
 
-### 📡 Streaming (Kafka) Utilities
-- `GET /online/streaming/status` - Kafka consumer status
-- `POST /online/streaming/consume` - Manually consume a batch (debug/testing)
+- `POST /online/training/start` - Start learning from new data
+  - *Use case*: Trigger model updates with accumulated interaction data
+  - *Output*: Training job ID, estimated duration
 
-## ⚙️ Streaming Architecture (Kafka as the Hub)
+## Configuration
 
-This project uses **Apache Kafka** as the central streaming backbone between event ingestion and incremental model training.
+The project uses EasyRec's configuration system with `.prototxt` files to define:
+- Data input/output paths
+- Feature engineering
+- Model architecture
+- Training parameters
+- Evaluation metrics
 
-Why Kafka:
-- Decouples producers (REST, trackers) from multiple consumers (trainer, monitoring, enrichment, archival)
-- Durable replayable log (late consumers & reprocessing)
-- Scales horizontally via partitions; preserves per-key ordering (e.g. per user)
-- Independent consumer groups (training vs monitoring do not interfere)
-- Natural integration point for downstream data lake, feature store, analytics
+## Supported Models
 
-Flow:
-```
-Client → POST /online/data/add → Kafka (topic: easyrec_training)
-                                     ↓ (internal EasyRec consumer)
-                             EasyRec Online Trainer → Incremental model updates
-                                     ↓
-                               Updated recommendations
-```
-Additional monitoring consumer group `<group>-monitor` exposes:
-- `/online/streaming/status` (lag, offsets)
-- `/online/streaming/consume` (sample messages)
-- `/online/streaming/config` (active config)
+Each model uses different techniques to understand user preferences and make recommendations:
 
-Startup Order (recommended):
-1. Start Kafka (docker compose up kafka)
-2. Start API service
-3. Call `POST /online/training/start` (establishes kafka_config, starts trainer) 
-4. Begin sending events with `POST /online/data/add`
+- **DeepFM**: Deep Factorization Machine
+  - *What it does*: Combines simple patterns (like "young users like action movies") with complex patterns (like "users who like A and B also like C")
+  - *Best for*: E-commerce, apps with lots of categorical features (brands, categories, etc.)
 
-Bootstrap Option: You may send events BEFORE starting training by including inline `kafka_config` in `data/add`, but do start training soon after so offsets begin advancing.
+- **Wide&Deep**: Wide & Deep Learning
+  - *What it does*: Balances memorization (remembering specific user-item pairs) with generalization (learning broader patterns)
+  - *Best for*: App stores, content platforms where you need both popular and personalized recommendations
 
-Event Schema (example):
-```json
-{
-  "user_id": "u123",
-  "item_id": "i456",
-  "timestamp": 1712345678,
-  "label": 1,
-  "action_type": "click",
-  "features": { "age": 34, "country": "US" },
-  "version": 1
-}
-```
-Partition Key: defaults to `user_id` (ensures per-user ordering). For skewed traffic, consider hashing or composite keys.
+- **DSSM**: Deep Structured Semantic Model  
+  - *What it does*: Understands the "meaning" behind users and items to find semantic similarities
+  - *Best for*: Search recommendations, content discovery where text/descriptions matter
 
-Retention: Set topic retention (e.g. 7–30 days) and archive to data lake for long-term storage.
+- **DCN**: Deep & Cross Network
+  - *What it does*: Automatically discovers feature interactions without manual engineering
+  - *Best for*: Complex datasets where feature relationships are not obvious
 
-## 🛣️ Roadmap & Extension Ideas
-| Area | Planned / Suggested Extension | Benefit |
-|------|------------------------------|---------|
-| Schema Governance | Avro / Protobuf + Schema Registry | Safe evolution, validation |
-| Data Lake Sink | Kafka Connect → S3 / HDFS (Parquet, partitioned) | Offline training, auditing |
-| Enrichment | Flink / Kafka Streams to produce enriched topic | Precomputed aggregates, lighten trainer load |
-| Feature Store | Stream to Redis/DynamoDB + Iceberg/Delta | Online + offline feature parity |
-| Monitoring | Consumer lag & anomaly metrics → Prometheus | Operational visibility |
-| DLQ | `<topic>.dlq` for invalid events | Isolation & debugging |
-| Idempotency | Idempotent producer + optional Redis key cache | Duplicate suppression |
-| Security | SASL_SSL, ACLs, secrets mgmt | Hardened production deployment |
-| Exactly-once | Transactions (confluent) / Flink EOS | Strong delivery guarantees |
-| Multi-region | MirrorMaker 2 replication | DR & locality |
-| Backfill | Replay archived Parquet → Kafka | Recompute features / retrain |
+- **AutoInt**: Automatic Feature Interaction Learning
+  - *What it does*: Uses attention mechanisms to automatically find which features work well together
+  - *Best for*: High-dimensional data with many features where manual feature engineering is difficult
 
-Operational Defaults:
-| Setting | Suggestion | Notes |
-|---------|------------|-------|
-| Partitions | 6–12 (start) | Scale with throughput |
-| Replication | 3 (prod) | HA (1 for local dev) |
-| Retention | 7–30 days | Replay window |
-| acks | all | Strong durability |
-| Idempotence | enabled | Avoid duplicates on retry |
-| Compression | lz4 / zstd | Throughput vs CPU |
-| Linger | 5–50 ms | Balance latency vs batch |
+## License
+
+This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
+
+## References
+
+- [EasyRec GitHub Repository](https://github.com/alibaba/EasyRec)
+- [EasyRec Documentation](https://easyrec.readthedocs.io/)

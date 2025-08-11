@@ -1,7 +1,5 @@
 # EasyRec Online - API Usage Examples
 
-> API Version: 1.2.0
-
 This document provides examples of how to use the **EasyRec Online** REST API, which extends Alibaba's EasyRec framework with real-time learning capabilities.
 
 ## 🏗️ Architecture Overview
@@ -10,13 +8,6 @@ This document provides examples of how to use the **EasyRec Online** REST API, w
 
 - **🔵 Alibaba EasyRec**: Model training, evaluation, configuration format
 - **🟢 EasyRec Online**: REST API, streaming support, incremental updates
-- **Kafka Flow**:
-  1. `POST /online/training/start` supplies/locks the active Kafka `kafka_config` (bootstrap servers, topic, group) and launches the EasyRec training process which creates its **internal consumer** (group = configured group) that performs incremental learning.
-  2. Client applications send events via `POST /online/data/add` which publishes to Kafka using the shared config.
-  3. A **monitoring consumer** (group = `<group>-monitor`) is exposed for diagnostics via `/online/streaming/status`, `/online/streaming/consume` and `/online/streaming/config`; it does NOT affect training offsets.
-  4. If you must enqueue data before training has started, include an inline `kafka_config` in the `data/add` request; this initializes the producer (training can be started later with the same config).
-
-> IMPORTANT: For normal operation call `/online/training/start` BEFORE using `/online/data/add`. Inline `kafka_config` in `data/add` is an advanced/bootstrap path only.
 
 ## Starting the API Server
 
@@ -49,7 +40,7 @@ python scripts/serve.py
 
 **Endpoint:** `GET /health`
 
-**Description:** Check if the API is running and get model status (now includes `version`).
+**Description:** Check if the API is running and get model status.
 
 **Example:**
 ```bash
@@ -73,8 +64,7 @@ curl -X GET http://localhost:5000/health
     "online_learning": true,
     "streaming_support": true,
     "incremental_updates": true
-  },
-  "version": "1.1.0"
+  }
 }
 ```
 
@@ -82,7 +72,7 @@ curl -X GET http://localhost:5000/health
 
 **Endpoint:** `GET /model/info`
 
-**Description:** Get aggregated information about the loaded base model and (if active) online incremental trainer (latest checkpoint, exports, incremental update artifacts).
+**Description:** Get detailed information about the loaded model.
 
 **Example:**
 ```bash
@@ -224,29 +214,26 @@ curl -X GET http://localhost:5000/embeddings/item/456
 
 **Endpoint:** `POST /online/data/add`
 
-**Description:** Publish training samples to Kafka for incremental learning. Requires that incremental training has been started with `/online/training/start`, unless you provide an inline `kafka_config` (bootstrap scenario).
+**Description:** Add training samples for incremental learning.
 
-**Request Body (standard after training started):**
+**Request Body:**
 ```json
 {
   "samples": [
-    { "user_id": 123, "item_id": 456, "label": 1, "rating": 4.5 }
+    {
+      "user_id": 123,
+      "item_id": 456,
+      "label": 1,
+      "rating": 4.5,
+      "features": {
+        "gender": 1,
+        "age": 3,
+        "genres": "Action|Drama"
+      }
+    }
   ]
 }
 ```
-
-**Request Body (bootstrap before training started):**
-```json
-{
-  "kafka_config": { "servers": "localhost:9092", "topic": "easyrec_training" },
-  "samples": [ { "user_id": 123, "item_id": 456, "label": 1 } ]
-}
-```
-
-**Notes:**
-- Inline `kafka_config` must include at least `servers` and `topic`.
-- Messages are JSON; key defaults to `user_id` if present.
-- Partial success returns HTTP 207 (multi-status semantics) with counts.
 
 **Example:**
 ```bash
@@ -263,7 +250,7 @@ curl -X POST http://localhost:5000/online/data/add \
 
 **Endpoint:** `POST /online/training/start`
 
-**Description:** Start real-time incremental training. MUST be called (recommended) before data ingestion unless using the bootstrap pattern above.
+**Description:** Start real-time incremental training with streaming data.
 
 **Request Body:**
 ```json
@@ -294,23 +281,6 @@ curl -X POST http://localhost:5000/online/training/start \
   }'
 ```
 
-### (New) Streaming / Monitoring Endpoints
-
-These endpoints expose the active Kafka streaming configuration and allow safe monitoring without disturbing training offsets.
-
-#### A. Get Streaming Config
-**Endpoint:** `GET /online/streaming/config`
-**Description:** Returns active `kafka_config` plus the derived monitoring consumer group (`group + '-monitor'`).
-
-#### B. Streaming Status
-**Endpoint:** `GET /online/streaming/status`
-**Description:** Returns monitoring consumer connection state and current partition offsets (group = `<group>-monitor`).
-
-#### C. Manual Consume (Monitoring)
-**Endpoint:** `POST /online/streaming/consume`
-**Request Body:** `{ "batch_size": 100, "timeout": 10 }`
-**Description:** Fetch a sample batch (preview) without committing training offsets.
-
 ### 9. Get Training Status
 
 **Endpoint:** `GET /online/training/status`
@@ -336,58 +306,53 @@ curl -X GET http://localhost:5000/online/training/status
 }
 ```
 
-### 10. Tail Training Logs
+### 10. Trigger Model Retraining
 
-**Endpoint:** `GET /online/training/logs?lines=100&stream=stderr`
+**Endpoint:** `POST /online/model/retrain`
 
-**Description:** Retrieve latest stdout/stderr lines from the online training subprocess.
-
-**Example:**
-```bash
-curl -X GET 'http://localhost:5000/online/training/logs?lines=50&stream=both'
-```
-
-### 11. Update Restart Policy
-
-**Endpoint:** `PATCH /online/training/restart-policy`
+**Description:** Trigger full or incremental model retraining.
 
 **Request Body:**
 ```json
-{ "max_restarts": 5, "restart_backoff_sec": 20 }
+{
+  "retrain_type": "incremental",
+  "export_after": true
+}
 ```
 
 **Example:**
 ```bash
-curl -X PATCH http://localhost:5000/online/training/restart-policy \
-  -H 'Content-Type: application/json' \
-  -d '{"max_restarts":5, "restart_backoff_sec":20}'
+curl -X POST http://localhost:5000/online/model/retrain \
+  -H "Content-Type: application/json" \
+  -d '{
+    "retrain_type": "full",
+    "export_after": true
+  }'
 ```
 
-### 12. Export Model
+### 11. Get Streaming Status
 
-**Endpoint:** `POST /model/export`
+**Endpoint:** `GET /online/streaming/status`
 
-**Request Body:**
+**Description:** Get status of streaming data consumption.
+
+**Example:**
+```bash
+curl -X GET http://localhost:5000/online/streaming/status
+```
+
+**Response:**
 ```json
-{ "export_dir": "models/export/online", "include_incremental": true }
-```
-
-**Example:**
-```bash
-curl -X POST http://localhost:5000/model/export \
-  -H 'Content-Type: application/json' \
-  -d '{"export_dir":"models/export/online"}'
-```
-
-### 13. List Incremental Updates
-
-**Endpoint:** `GET /online/updates/list`
-
-**Description:** List incremental update artifacts (may be merged into /model/info later).
-
-**Example:**
-```bash
-curl -X GET http://localhost:5000/online/updates/list
+{
+  "success": true,
+  "data": {
+    "connected": true,
+    "running": false,
+    "topic": "easyrec_training",
+    "group": "easyrec_online",
+    "current_offsets": {"0": 12345, "1": 12350}
+  }
+}
 ```
 
 ## Python Client Example
@@ -440,13 +405,9 @@ class EasyRecClient:
     
     # Online Learning Methods (EasyRec Online Extensions)
     
-    def add_training_data(self, samples, kafka_config=None):
-        """Publish training samples.
-        If training not started yet you may pass kafka_config={'servers':..., 'topic':...}.
-        """
+    def add_training_data(self, samples):
+        """Add training samples for incremental learning"""
         payload = {"samples": samples}
-        if kafka_config:
-            payload["kafka_config"] = kafka_config
         response = requests.post(
             f"{self.base_url}/online/data/add",
             json=payload
@@ -454,12 +415,13 @@ class EasyRecClient:
         return response.json()
     
     def start_incremental_training(self, kafka_config=None, update_config=None):
-        """Start incremental training (recommended before add_training_data)."""
+        """Start incremental training"""
         payload = {}
         if kafka_config:
             payload["kafka_config"] = kafka_config
         if update_config:
             payload["update_config"] = update_config
+            
         response = requests.post(
             f"{self.base_url}/online/training/start",
             json=payload
@@ -471,33 +433,21 @@ class EasyRecClient:
         response = requests.get(f"{self.base_url}/online/training/status")
         return response.json()
     
-    def tail_training_logs(self, lines=100, stream="stderr"):
-        """Tail training logs"""
-        response = requests.get(f"{self.base_url}/online/training/logs", params={"lines": lines, "stream": stream})
-        return response.json()
-    
-    def update_restart_policy(self, max_restarts=5, restart_backoff_sec=20):
-        """Update restart policy"""
+    def trigger_retraining(self, retrain_type="incremental", export_after=True):
+        """Trigger model retraining"""
         payload = {
-            "max_restarts": max_restarts,
-            "restart_backoff_sec": restart_backoff_sec
-        }
-        response = requests.patch(
-            f"{self.base_url}/online/training/restart-policy",
-            json=payload
-        )
-        return response.json()
-    
-    def export_model(self, export_dir="models/export/online", include_incremental=True):
-        """Export model"""
-        payload = {
-            "export_dir": export_dir,
-            "include_incremental": include_incremental
+            "retrain_type": retrain_type,
+            "export_after": export_after
         }
         response = requests.post(
-            f"{self.base_url}/model/export",
+            f"{self.base_url}/online/model/retrain",
             json=payload
         )
+        return response.json()
+    
+    def get_streaming_status(self):
+        """Get streaming status"""
+        response = requests.get(f"{self.base_url}/online/streaming/status")
         return response.json()
 
 # Usage example
@@ -518,15 +468,7 @@ if __name__ == "__main__":
     
     # Online Learning Examples
     
-    # Start incremental training (recommended before add_training_data)
-    training_result = client.start_incremental_training(kafka_config={
-        "servers": "localhost:9092",
-        "topic": "easyrec_training",
-        "group": "easyrec_online"
-    })
-    print("Started training:", training_result)
-
-    # Add new training data AFTER training started
+    # Add new training data
     new_samples = [
         {"user_id": 123, "item_id": 6, "label": 1, "rating": 4.8},
         {"user_id": 124, "item_id": 7, "label": 0, "rating": 2.1}
@@ -538,17 +480,14 @@ if __name__ == "__main__":
     status = client.get_training_status()
     print("Training status:", status)
     
-    # Tail training logs
-    logs = client.tail_training_logs(lines=50, stream="both")
-    print("Training logs:", logs)
+    # Start incremental training (if not already running)
+    if not status.get('data', {}).get('is_training', False):
+        training_result = client.start_incremental_training()
+        print("Started training:", training_result)
     
-    # Update restart policy
-    restart_policy = client.update_restart_policy(max_restarts=3, restart_backoff_sec=10)
-    print("Updated restart policy:", restart_policy)
-    
-    # Export model
-    export_result = client.export_model(export_dir="models/export/online")
-    print("Exported model:", export_result)
+    # Check streaming status
+    streaming_status = client.get_streaming_status()
+    print("Streaming status:", streaming_status)
 ```
 
 ## JavaScript Client Example
@@ -618,4 +557,3 @@ Common HTTP status codes:
 - `400`: Bad Request (invalid input)
 - `404`: Not Found
 - `500`: Internal Server Error
-```

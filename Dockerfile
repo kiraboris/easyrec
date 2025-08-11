@@ -1,35 +1,29 @@
-# Docker Configuration for EasyRec API with streaming support
+# Docker Configuration for EasyRec API
 
 FROM mybigpai-public-registry.cn-beijing.cr.aliyuncs.com/easyrec/easyrec:py36-tf1.15-0.8.5
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirement files first for caching (if separated; fallback to full copy later)
-COPY requirements.txt /app/requirements.txt
-
-# Install dependencies (ignore already satisfied to speed build)
-RUN pip install --no-cache-dir -r requirements.txt || true
-
-# Copy project source
+# Copy project files
 COPY . /app/
+
+# Install additional dependencies
+RUN pip install flask flask-cors gunicorn
 
 # Create necessary directories
 RUN mkdir -p models/checkpoints models/export logs data
 
-# Generate sample data (non-fatal if script already ran)
-RUN python data/process_data.py || true
+# Generate sample data
+RUN python data/process_data.py
 
 # Expose port
 EXPOSE 5000
 
 # Set environment variables
-ENV MODEL_DIR=/app/models/checkpoints/deepfm_movies \
-    CONFIG_PATH=/app/config/deepfm_config.prototxt \
-    PORT=5000 \
-    KAFKA_SERVERS=kafka:9092 \
-    KAFKA_TOPIC=easyrec_training \
-    KAFKA_GROUP=easyrec_online
+ENV MODEL_DIR=/app/models/checkpoints/deepfm_movies
+ENV CONFIG_PATH=/app/config/deepfm_config.prototxt
+ENV PORT=5000
 
-# Default command launches Gunicorn server wrapper
+# Run the application
 CMD ["python", "scripts/serve.py"]
