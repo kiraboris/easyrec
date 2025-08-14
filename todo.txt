@@ -1,0 +1,7 @@
+adjust ../setup/requirements_ali.txt
+adjust ../setup/setup_ali.sh (which includes git clone)
+test it -> Issue #3
+
+adjust ../setup/setup_online.sh and deps as well
+test online server it -> Issue #4
+
