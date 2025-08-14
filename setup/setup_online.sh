@@ -34,6 +34,7 @@ mkdir -p models/online/deepfm_movies
 mkdir -p models/export/online
 mkdir -p logs
 mkdir -p streaming/data
+mkdir -p streaming/config
 
 echo ""
 echo "🎉 EasyRec Online setup completed successfully!"
