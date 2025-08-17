@@ -1,4 +1,5 @@
 # python version: 3.9.13
+# uninstall jax jaxlib if installed
 
 absl-py==2.3.1
 astunparse==1.6.3
